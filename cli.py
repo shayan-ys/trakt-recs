@@ -165,6 +165,49 @@ def poll_for_token(device_code: str, interval: int, expires_in: int) -> dict:
         raise TraktOAuthError(f"unexpected status {r.status_code}: {r.text[:200]}")
 
 
+REFRESH_WINDOW_SECONDS = 24 * 3600  # refresh proactively when within 1 day of expiry
+
+
+def _auth_headers() -> dict[str, str]:
+    cid, _ = _client_creds()
+    tokens = load_tokens()
+    if tokens.get("expires_at", 0) - time.time() < REFRESH_WINDOW_SECONDS:
+        tokens = refresh_access_token()
+    return {
+        "Authorization": f"Bearer {tokens['access_token']}",
+        "trakt-api-version": "2",
+        "trakt-api-key": cid,
+        "Content-Type": "application/json",
+    }
+
+
+def get_authenticated(
+    path: str,
+    params: dict | None = None,
+    max_retries: int = 5,
+) -> tuple[object, int]:
+    """GET an authenticated Trakt endpoint. Returns (json_body, page_count).
+
+    Handles 429 with backoff that honors `Retry-After`. Auto-refreshes
+    the access token when within REFRESH_WINDOW_SECONDS of expiry.
+    """
+    url = f"{TRAKT_BASE}{path}"
+    for attempt in range(max_retries):
+        r = httpx.get(url, params=params, headers=_auth_headers(), timeout=30.0)
+        if r.status_code == 200:
+            page_count = int(r.headers.get("X-Pagination-Page-Count", "1"))
+            return r.json(), page_count
+        if r.status_code == 429:
+            retry_after = r.headers.get("Retry-After")
+            delay = float(retry_after) if retry_after and retry_after.replace(".", "").isdigit() else 2.0 * (attempt + 1)
+            time.sleep(delay)
+            continue
+        if r.status_code == 401:
+            raise TraktOAuthError(f"401 from {path}: {r.text[:200]}")
+        r.raise_for_status()
+    raise TraktOAuthError(f"exceeded {max_retries} retries on {path}")
+
+
 def main(argv: list[str] | None = None) -> int:
     load_dotenv()
     parser = argparse.ArgumentParser(prog="trakt-recs", description=__doc__)
