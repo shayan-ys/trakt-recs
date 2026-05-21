@@ -279,6 +279,79 @@ def cache_is_fresh() -> bool:
     return age < CACHE_STALE_SECONDS
 
 
+def _title_and_year(media: dict) -> str:
+    return f"{media['title']} ({media['year']})"
+
+
+def emit_context(cache: dict) -> str:
+    """Produce a compact markdown summary of watch history for Claude.
+
+    Sections: header, watched movies, watched shows (deduped), loved (9-10),
+    disliked (1-4), watchlist. Episodes are rolled up to the show level.
+    """
+    lines: list[str] = []
+    lines.append("# Trakt Watch Context")
+    lines.append("")
+    lines.append(f"Pulled at: {cache['pulled_at']}")
+    lines.append("")
+
+    movies: dict[int, dict] = {}
+    shows: dict[int, dict] = {}
+    for item in cache.get("history", []):
+        if item.get("type") == "movie":
+            m = item["movie"]
+            movies[m["ids"]["trakt"]] = m
+        elif item.get("type") == "episode":
+            s = item["show"]
+            shows[s["ids"]["trakt"]] = s
+
+    lines.append(f"You have watched **{len(movies)} movie{'s' if len(movies) != 1 else ''}** "
+                 f"and **{len(shows)} show{'s' if len(shows) != 1 else ''}** on Trakt.")
+    lines.append("")
+
+    lines.append("## Watched movies (exclude from any recommendation)")
+    lines.append("")
+    for m in sorted(movies.values(), key=lambda x: (x.get("year") or 0, x["title"])):
+        lines.append(f"- {_title_and_year(m)}")
+    lines.append("")
+
+    lines.append("## Watched shows (exclude from any recommendation)")
+    lines.append("")
+    for s in sorted(shows.values(), key=lambda x: (x.get("year") or 0, x["title"])):
+        lines.append(f"- {_title_and_year(s)}")
+    lines.append("")
+
+    loved = [r for r in cache.get("ratings", []) if r.get("rating", 0) >= 9]
+    disliked = [r for r in cache.get("ratings", []) if 1 <= r.get("rating", 0) <= 4]
+
+    if loved:
+        lines.append("## Loved (rated 9–10)")
+        lines.append("")
+        for r in sorted(loved, key=lambda x: -x["rating"]):
+            media = r.get("movie") or r.get("show") or {}
+            lines.append(f"- {_title_and_year(media)} — {r['rating']}/10")
+        lines.append("")
+
+    if disliked:
+        lines.append("## Disliked (rated 1–4)")
+        lines.append("")
+        for r in sorted(disliked, key=lambda x: x["rating"]):
+            media = r.get("movie") or r.get("show") or {}
+            lines.append(f"- {_title_and_year(media)} — {r['rating']}/10")
+        lines.append("")
+
+    watchlist = cache.get("watchlist", [])
+    if watchlist:
+        lines.append("## Watchlist (queued, not yet watched)")
+        lines.append("")
+        for w in watchlist:
+            media = w.get("movie") or w.get("show") or {}
+            lines.append(f"- {_title_and_year(media)}")
+        lines.append("")
+
+    return "\n".join(lines)
+
+
 def main(argv: list[str] | None = None) -> int:
     load_dotenv()
     parser = argparse.ArgumentParser(prog="trakt-recs", description=__doc__)
