@@ -5,10 +5,12 @@ Subcommands: auth, pull, context, status.
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import sys
 import time
 from dataclasses import dataclass
+from pathlib import Path
 
 import httpx
 from dotenv import load_dotenv
@@ -27,6 +29,64 @@ class DeviceCodeResponse:
     verification_url: str
     expires_in: int
     interval: int
+
+
+def state_dir() -> Path:
+    """Resolve the state directory. Honors TRAKT_STATE_DIR env var; defaults next to cli.py."""
+    override = os.environ.get("TRAKT_STATE_DIR")
+    if override:
+        return Path(override)
+    return Path(__file__).parent / ".state"
+
+
+def _tokens_path() -> Path:
+    return state_dir() / "tokens.json"
+
+
+def save_tokens(tokens: dict) -> None:
+    d = state_dir()
+    d.mkdir(parents=True, exist_ok=True)
+    p = _tokens_path()
+    p.write_text(json.dumps(tokens, indent=2))
+    p.chmod(0o600)
+
+
+def load_tokens() -> dict:
+    p = _tokens_path()
+    if not p.exists():
+        raise TraktOAuthError(
+            "not authenticated — run `python cli.py auth` first (no tokens.json in state dir)"
+        )
+    return json.loads(p.read_text())
+
+
+def refresh_access_token() -> dict:
+    """Use the stored refresh_token to get a new access+refresh pair. Persists both."""
+    cid, csec = _client_creds()
+    current = load_tokens()
+    r = httpx.post(
+        f"{TRAKT_BASE}/oauth/token",
+        json={
+            "refresh_token": current["refresh_token"],
+            "client_id": cid,
+            "client_secret": csec,
+            "redirect_uri": "urn:ietf:wg:oauth:2.0:oob",
+            "grant_type": "refresh_token",
+        },
+        headers={"Content-Type": "application/json"},
+        timeout=30.0,
+    )
+    if r.status_code != 200:
+        err = ""
+        try:
+            err = r.json().get("error", "")
+        except Exception:
+            err = r.text[:200]
+        raise TraktOAuthError(f"refresh failed ({r.status_code}): {err}")
+    data = r.json()
+    data["expires_at"] = int(data["created_at"]) + int(data["expires_in"])
+    save_tokens(data)
+    return data
 
 
 def _client_creds() -> tuple[str, str]:
