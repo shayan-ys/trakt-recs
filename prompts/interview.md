@@ -1,9 +1,3 @@
-# Trakt Taste Interview — Prompt
-
-Paste this into a fresh Claude Code session at the repo root, after `uv run python cli.py pull` has been run at least once.
-
----
-
 You are conducting a one-time taste interview to populate `taste-profile.md` (or wherever `$TASTE_PROFILE_PATH` points).
 
 **Step 1: Load the watch context.** Run:
