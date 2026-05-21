@@ -10,7 +10,7 @@ import os
 import sys
 import time
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 import httpx
@@ -246,7 +246,7 @@ def pull_all() -> dict:
         "history": pull_history(),
         "ratings": pull_ratings(),
         "watchlist": pull_watchlist(),
-        "pulled_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "pulled_at": datetime.now(UTC).isoformat(timespec="seconds"),
     }
 
 
@@ -275,7 +275,7 @@ def cache_is_fresh() -> bool:
     if cache is None:
         return False
     pulled_at = datetime.fromisoformat(cache["pulled_at"])
-    age = (datetime.now(timezone.utc) - pulled_at).total_seconds()
+    age = (datetime.now(UTC) - pulled_at).total_seconds()
     return age < CACHE_STALE_SECONDS
 
 
@@ -352,12 +352,83 @@ def emit_context(cache: dict) -> str:
     return "\n".join(lines)
 
 
+def cmd_auth(_args: argparse.Namespace) -> int:
+    code = request_device_code()
+    print(f"Visit: {code.verification_url}")
+    print(f"Enter code: {code.user_code}")
+    print(f"(Code expires in {code.expires_in // 60} minutes; polling every {code.interval}s)")
+    print()
+    tokens = poll_for_token(code.device_code, interval=code.interval, expires_in=code.expires_in)
+    save_tokens(tokens)
+    print("✓ authorized — tokens saved to .state/tokens.json")
+    return 0
+
+
+def cmd_pull(_args: argparse.Namespace) -> int:
+    payload = pull_all()
+    save_cache(payload)
+    print(
+        f"✓ pulled {len(payload['history'])} history items, "
+        f"{len(payload['ratings'])} ratings, "
+        f"{len(payload['watchlist'])} watchlist entries"
+    )
+    return 0
+
+
+def cmd_context(args: argparse.Namespace) -> int:
+    if args.refresh or not cache_is_fresh():
+        payload = pull_all()
+        save_cache(payload)
+    else:
+        payload = load_cache()
+    print(emit_context(payload))
+    return 0
+
+
+def cmd_status(_args: argparse.Namespace) -> int:
+    try:
+        tokens = load_tokens()
+        expires_in = int(tokens["expires_at"] - time.time())
+        days = expires_in // 86400
+        print(f"tokens: ok (access expires in ~{days}d)")
+    except TraktOAuthError as e:
+        print(f"tokens: {e}")
+
+    cache = load_cache()
+    if cache is None:
+        print("cache: missing (run `pull` or `context --refresh`)")
+    else:
+        print(
+            f"cache: pulled_at={cache['pulled_at']} "
+            f"history={len(cache.get('history', []))} "
+            f"ratings={len(cache.get('ratings', []))} "
+            f"watchlist={len(cache.get('watchlist', []))} "
+            f"fresh={cache_is_fresh()}"
+        )
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     load_dotenv()
     parser = argparse.ArgumentParser(prog="trakt-recs", description=__doc__)
-    parser.add_subparsers(dest="cmd", required=True)
-    parser.parse_args(argv)
-    return 0
+    sub = parser.add_subparsers(dest="cmd", required=True)
+
+    sub.add_parser("auth", help="Device Code OAuth flow")
+    sub.add_parser("pull", help="Refresh history/ratings/watchlist into .state/cache.json")
+
+    context_p = sub.add_parser("context", help="Emit markdown summary of watch history for Claude")
+    context_p.add_argument("--refresh", action="store_true", help="Force a fresh pull before emitting")
+
+    sub.add_parser("status", help="Show token expiry and cache freshness")
+
+    args = parser.parse_args(argv)
+    dispatch = {
+        "auth": cmd_auth,
+        "pull": cmd_pull,
+        "context": cmd_context,
+        "status": cmd_status,
+    }
+    return dispatch[args.cmd](args)
 
 
 if __name__ == "__main__":
