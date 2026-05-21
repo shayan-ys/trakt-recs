@@ -250,6 +250,35 @@ def pull_all() -> dict:
     }
 
 
+CACHE_STALE_SECONDS = 6 * 3600  # 6h; tuneable later
+
+
+def _cache_path() -> Path:
+    return state_dir() / "cache.json"
+
+
+def save_cache(payload: dict) -> None:
+    state_dir().mkdir(parents=True, exist_ok=True)
+    _cache_path().write_text(json.dumps(payload))
+
+
+def load_cache() -> dict | None:
+    p = _cache_path()
+    if not p.exists():
+        return None
+    return json.loads(p.read_text())
+
+
+def cache_is_fresh() -> bool:
+    """True if the cache exists and was pulled within CACHE_STALE_SECONDS."""
+    cache = load_cache()
+    if cache is None:
+        return False
+    pulled_at = datetime.fromisoformat(cache["pulled_at"])
+    age = (datetime.now(timezone.utc) - pulled_at).total_seconds()
+    return age < CACHE_STALE_SECONDS
+
+
 def main(argv: list[str] | None = None) -> int:
     load_dotenv()
     parser = argparse.ArgumentParser(prog="trakt-recs", description=__doc__)
