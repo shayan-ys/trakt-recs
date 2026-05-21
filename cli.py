@@ -10,6 +10,7 @@ import os
 import sys
 import time
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from pathlib import Path
 
 import httpx
@@ -206,6 +207,47 @@ def get_authenticated(
             raise TraktOAuthError(f"401 from {path}: {r.text[:200]}")
         r.raise_for_status()
     raise TraktOAuthError(f"exceeded {max_retries} retries on {path}")
+
+
+HISTORY_PAGE_LIMIT = 100
+INTER_PAGE_SLEEP = 0.25  # belt-and-braces for GET rate limit (1000/5min)
+
+
+def pull_history() -> list[dict]:
+    """Walk all pages of /sync/history and return the combined list."""
+    items: list[dict] = []
+    page = 1
+    while True:
+        body, page_count = get_authenticated(
+            "/sync/history",
+            params={"page": page, "limit": HISTORY_PAGE_LIMIT},
+        )
+        items.extend(body)
+        if page >= page_count:
+            break
+        page += 1
+        time.sleep(INTER_PAGE_SLEEP)
+    return items
+
+
+def pull_ratings() -> list[dict]:
+    body, _ = get_authenticated("/sync/ratings")
+    return body
+
+
+def pull_watchlist() -> list[dict]:
+    body, _ = get_authenticated("/sync/watchlist")
+    return body
+
+
+def pull_all() -> dict:
+    """Pull history + ratings + watchlist. Returns dict with `pulled_at` ISO 8601 UTC."""
+    return {
+        "history": pull_history(),
+        "ratings": pull_ratings(),
+        "watchlist": pull_watchlist(),
+        "pulled_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+    }
 
 
 def main(argv: list[str] | None = None) -> int:
