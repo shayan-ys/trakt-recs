@@ -2,7 +2,6 @@ from __future__ import annotations
 
 from cli import emit_context
 
-
 SAMPLE_CACHE = {
     "pulled_at": "2026-05-21T12:00:00+00:00",
     "history": [
